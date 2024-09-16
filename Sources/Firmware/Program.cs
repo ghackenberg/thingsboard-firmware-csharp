@@ -82,7 +82,7 @@ client.ApplicationMessageReceivedAsync += async e =>
         firmwareRequestCount++;
 
         // Request first chunk
-        if (file != null && !file.EndsWith($"{firmwareTitle}-{firmwareVersion}"))
+        if (file != null && !file.EndsWith(".exe") && !file.EndsWith($"{firmwareTitle}-{firmwareVersion}"))
         {
             Console.WriteLine("Starting firmware download");
 
@@ -113,7 +113,7 @@ client.ApplicationMessageReceivedAsync += async e =>
         firmwareRequestCount++;
 
         // Request first chunk
-        if (file != null && !file.EndsWith($"{firmwareTitle}-{firmwareVersion}"))
+        if (file != null && !file.EndsWith(".exe") && !file.EndsWith($"{firmwareTitle}-{firmwareVersion}"))
         {
             Console.WriteLine("Starting firmware download");
 
