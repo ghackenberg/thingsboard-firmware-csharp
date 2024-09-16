@@ -1,5 +1,7 @@
-﻿using MQTTnet;
+﻿using FluentModbus;
+using MQTTnet;
 using MQTTnet.Client;
+using Opc.UaFx.Client;
 using System.Diagnostics;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -168,6 +170,28 @@ client.ApplicationMessageReceivedAsync += async e =>
 Console.WriteLine("Connecting to MQTT broker");
 
 await client.ConnectAsync(options);
+
+// Modbus TCP
+try
+{
+    var modbus = new ModbusTcpClient();
+    modbus.Connect();
+}
+catch (Exception ex)
+{
+    Console.WriteLine(ex.Message);
+}
+
+// OPC UA
+try
+{
+    var opcua = new OpcClient();
+    opcua.Connect();
+}
+catch (Exception ex)
+{
+    Console.WriteLine(ex.Message);
+}
 
 // Send random telemetry
 while (active)
