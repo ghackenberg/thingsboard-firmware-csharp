@@ -1,23 +1,22 @@
-﻿using FluentModbus;
+﻿using Firmware;
+using FluentModbus;
 using MQTTnet;
 using MQTTnet.Client;
-using Opc.UaFx.Client;
 using System.Diagnostics;
+using System.Net;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 
 var file = Process.GetCurrentProcess().MainModule?.FileName;
 
 Console.WriteLine($"Running {file}");
 
-const string THINGSBOARD_HOST = "192.168.137.1";
-const int THINGSBOARD_PORT = 1883;
-const string THINGSBOARD_TOKEN = "bvdoxulzQYsYUshqfiSE";
-
 var builder = new MqttClientOptionsBuilder();
-var options = builder.WithTcpServer(THINGSBOARD_HOST, THINGSBOARD_PORT).WithCredentials(THINGSBOARD_TOKEN).Build();
+var options = builder.WithTcpServer(Constants.THINGSBOARD_HOST, Constants.THINGSBOARD_PORT).WithCredentials(Constants.THINGSBOARD_TOKEN).Build();
 var factory = new MqttFactory();
-var client = factory.CreateMqttClient();
+var mqtt = factory.CreateMqttClient();
+var modbus = new ModbusTcpClient();
 
 var firmwareRequestCount = -1;
 var firmwareChunkSize = 1024 * 4;
@@ -30,32 +29,32 @@ var active = true;
 
 var random = new Random();
 
-client.ConnectedAsync += async e =>
+mqtt.ConnectedAsync += async e =>
 {
     Console.WriteLine("Connected");
 
     // Response to initial attribute request
-    await client.SubscribeAsync("v1/devices/me/attributes/response/+");
+    await mqtt.SubscribeAsync("v1/devices/me/attributes/response/+");
     // Attribute update
-    await client.SubscribeAsync("v1/devices/me/attributes");
+    await mqtt.SubscribeAsync("v1/devices/me/attributes");
     // Firmware chunk
-    await client.SubscribeAsync("v2/fw/response/+/chunk/+");
+    await mqtt.SubscribeAsync("v2/fw/response/+/chunk/+");
 
     // Send initial attribute request
     Console.WriteLine("Sending initial attribute request");
 
-    await client.PublishStringAsync("v1/devices/me/attributes/request/0", "{}");
+    await mqtt.PublishStringAsync("v1/devices/me/attributes/request/0", "{}");
 };
-client.DisconnectedAsync += async e =>
+mqtt.DisconnectedAsync += async e =>
 {
     Console.WriteLine("Disconnected");
 
     if (active)
     {
-        await client.ReconnectAsync();
+        await mqtt.ReconnectAsync();
     }
 };
-client.ApplicationMessageReceivedAsync += async e =>
+mqtt.ApplicationMessageReceivedAsync += async e =>
 {
     var topic = e.ApplicationMessage.Topic;
 
@@ -88,7 +87,7 @@ client.ApplicationMessageReceivedAsync += async e =>
         {
             Console.WriteLine("Starting firmware download");
 
-            await client.PublishStringAsync($"v2/fw/request/{firmwareRequestCount}/chunk/0", $"{firmwareChunkSize}");
+            await mqtt.PublishStringAsync($"v2/fw/request/{firmwareRequestCount}/chunk/0", $"{firmwareChunkSize}");
         }
     }
     // Attribute update
@@ -119,7 +118,7 @@ client.ApplicationMessageReceivedAsync += async e =>
         {
             Console.WriteLine("Starting firmware download");
 
-            await client.PublishStringAsync($"v2/fw/request/{firmwareRequestCount}/chunk/0", $"{firmwareChunkSize}");
+            await mqtt.PublishStringAsync($"v2/fw/request/{firmwareRequestCount}/chunk/0", $"{firmwareChunkSize}");
         }
     }
     // Firmware chunk
@@ -148,7 +147,7 @@ client.ApplicationMessageReceivedAsync += async e =>
                 }
 
                 // Request next chunk
-                await client.PublishStringAsync($"v2/fw/request/{myFirmwareRequestCount}/chunk/{myFirmwareChunkIndex + 1}", $"{firmwareChunkSize}");
+                await mqtt.PublishStringAsync($"v2/fw/request/{myFirmwareRequestCount}/chunk/{myFirmwareChunkIndex + 1}", $"{firmwareChunkSize}");
             }
             else
             {
@@ -166,47 +165,66 @@ client.ApplicationMessageReceivedAsync += async e =>
     }
 };
 
-// Connect to MQTT broker
-Console.WriteLine("Connecting to MQTT broker");
-
-await client.ConnectAsync(options);
-
-// Modbus TCP
 try
 {
-    var modbus = new ModbusTcpClient();
-    modbus.Connect();
+    // Connect to MQTT broker
+    Console.WriteLine("Connecting to MQTT broker");
+
+    await mqtt.ConnectAsync(options);
+
+    // Connect to Modbus server
+    Console.WriteLine("Connecting to Modbus server");
+
+    var address = IPAddress.Parse(Constants.LOGO_HOST);
+    var endpoint = new IPEndPoint(address, Constants.LOGO_PORT);
+    var endianness = ModbusEndianness.BigEndian;
+
+    modbus.Connect(endpoint, endianness);
+
+    // Collect and forward telemetry
+    while (active)
+    {
+        // Collect telemetry
+        Console.WriteLine("Reading Modbus holding register 528");
+
+        // - Read data
+        var memory = await modbus.ReadHoldingRegistersAsync<ushort>(1, 528, 1);
+        // - Convert data
+        var array = memory.ToArray();
+        // - Scale data
+        var temperature = array[0] * 0.1;
+
+        // Forward telemetry
+        Console.WriteLine("Sending device telemetry via MQTT");
+
+        var message = new JsonObject();
+        message["random"] = random.Next(0, 100);
+        message["temperature"] = temperature;
+
+        await mqtt.PublishStringAsync("v1/devices/me/telemetry", message.ToJsonString());
+
+        // Sleep
+        await Task.Delay(1000);
+    }
 }
 catch (Exception ex)
 {
     Console.WriteLine(ex.Message);
 }
-
-// OPC UA
-try
+finally
 {
-    var opcua = new OpcClient();
-    opcua.Connect();
+    // Disconnect from Modbus server
+    Console.WriteLine("Disconnecting from Modbus server");
+
+    modbus.Disconnect();
+
+    // Disconnect from MQTT broker
+    Console.WriteLine("Disconnecting from MQTT broker");
+
+    await mqtt.DisconnectAsync();
+
+    // Start new firmware
+    Console.WriteLine("Starting new firmware");
+
+    Process.Start($"{firmwareTitle}-{firmwareVersion}");
 }
-catch (Exception ex)
-{
-    Console.WriteLine(ex.Message);
-}
-
-// Send random telemetry
-while (active)
-{
-    await client.PublishStringAsync("v1/devices/me/telemetry", $"{{\"random\":{random.Next(0, 100)}}}");
-
-    await Task.Delay(1000);
-}
-
-// Disconnect from MQTT broker
-Console.WriteLine("Disconnecting from MQTT broker");
-
-await client.DisconnectAsync();
-
-// Start new firmware
-Console.WriteLine("Starting new firmware");
-
-Process.Start($"{firmwareTitle}-{firmwareVersion}");
